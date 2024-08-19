@@ -104,6 +104,7 @@ impl LogProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rayon::prelude::*;
     use std::io::Cursor;
 
     #[test]
@@ -121,7 +122,6 @@ mod tests {
 
         processor.process_line(line).unwrap();
 
-        let _pipelines = processor.pipelines.lock().unwrap();
         let current_pipeline = processor.current_pipeline.lock().unwrap();
 
         assert!(current_pipeline.is_some());
@@ -141,7 +141,6 @@ mod tests {
         processor.process_line(start_line).unwrap();
         processor.process_line(end_line).unwrap();
 
-        let _pipelines = processor.pipelines.lock().unwrap();
         let current_pipeline = processor.current_pipeline.lock().unwrap();
 
         assert!(current_pipeline.is_some());
@@ -172,11 +171,35 @@ mod tests {
     #[test]
     fn test_print_summary() {
         let processor = LogProcessor::new().unwrap();
-        let start_line = "2024-06-07T09:05:20.873354Z  INFO Preparing stage pipeline_stages=1/12 stage=Headers checkpoint=20037711 target=None";
-        let end_line = "2024-06-07T09:06:20.873354Z  INFO Finished stage pipeline_stages=1/12 stage=Headers checkpoint=20038569 target=None stage_progress=100.00%";
+        let stages = [
+            "Headers",
+            "Bodies",
+            "Receipts",
+            "Senders",
+            "Execution",
+            "HashState",
+            "IntermediateHashes",
+            "AccountHashing",
+            "StorageHashing",
+            "MerkleTrie",
+            "Finalization",
+            "Refinement",
+        ];
 
-        processor.process_line(start_line).unwrap();
-        processor.process_line(end_line).unwrap();
+        for (i, stage) in stages.iter().enumerate() {
+            let start_line = format!("2024-06-07T09:{:02}:00.000000Z  INFO Preparing stage pipeline_stages={}/12 stage={} checkpoint=20037711 target=None", i, i+1, stage);
+            let end_line = format!("2024-06-07T09:{:02}:30.000000Z  INFO Finished stage pipeline_stages={}/12 stage={} checkpoint=20038569 target=None stage_progress=100.00%", i, i+1, stage);
+
+            processor.process_line(&start_line).unwrap();
+            processor.process_line(&end_line).unwrap();
+        }
+
+        // Adding multiple "Preparing stage" entries for the same stage to test overwriting
+        let additional_start_line = "2024-06-07T09:06:00.000000Z  INFO Preparing stage pipeline_stages=1/12 stage=Headers checkpoint=20037711 target=None";
+        processor.process_line(additional_start_line).unwrap();
+
+        let additional_end_line = "2024-06-07T09:06:30.000000Z  INFO Finished stage pipeline_stages=1/12 stage=Headers checkpoint=20038569 target=None stage_progress=100.00%";
+        processor.process_line(additional_end_line).unwrap();
 
         // Finalize the last pipeline by pushing it to pipelines
         {
@@ -193,7 +216,61 @@ mod tests {
         let output_str = String::from_utf8(output.into_inner()).unwrap();
 
         assert!(output_str.contains("Pipeline 1:"));
-        assert!(output_str.contains("Stage Headers:"));
+        for stage in stages.iter() {
+            assert!(output_str.contains(&format!("Stage {}:", stage)));
+        }
+        assert!(output_str.contains("Total Pipeline Duration:"));
+    }
+
+    #[test]
+    fn test_concurrent_processing() {
+        let processor = Arc::new(LogProcessor::new().unwrap());
+        let stages = [
+            "Headers",
+            "Bodies",
+            "Receipts",
+            "Senders",
+            "Execution",
+            "HashState",
+            "IntermediateHashes",
+            "AccountHashing",
+            "StorageHashing",
+            "MerkleTrie",
+            "Finalization",
+            "Refinement",
+        ];
+
+        // Generate log lines
+        let log_lines: Vec<String> = stages.iter().enumerate().flat_map(|(i, stage)| {
+            vec![
+                format!("2024-06-07T09:{:02}:00.000000Z  INFO Preparing stage pipeline_stages={}/12 stage={} checkpoint=20037711 target=None", i, i+1, stage),
+                format!("2024-06-07T09:{:02}:30.000000Z  INFO Finished stage pipeline_stages={}/12 stage={} checkpoint=20038569 target=None stage_progress=100.00%", i, i+1, stage)
+            ]
+        }).collect();
+
+        // Process lines concurrently
+        log_lines.par_iter().for_each(|line| {
+            processor.process_line(line).unwrap();
+        });
+
+        // Finalize the last pipeline by pushing it to pipelines
+        {
+            let mut pipelines = processor.pipelines.lock().unwrap();
+            let mut current_pipeline = processor.current_pipeline.lock().unwrap();
+            if let Some(pipeline) = current_pipeline.take() {
+                pipelines.push(pipeline);
+            }
+        }
+
+        let mut output = Cursor::new(Vec::new());
+        processor.print_summary(&mut output);
+
+        let output_str = String::from_utf8(output.into_inner()).unwrap();
+
+        assert!(output_str.contains("Pipeline 1:"));
+        for stage in stages.iter() {
+            assert!(output_str.contains(&format!("Stage {}:", stage)));
+        }
         assert!(output_str.contains("Total Pipeline Duration:"));
     }
 }
