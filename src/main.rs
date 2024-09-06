@@ -3,6 +3,8 @@ use log_parser::runner::Runner;
 use std::{env, io::stdout};
 
 fn main() -> Result<()> {
+    env_logger::init();
+
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         eprintln!("Usage: {} <path_to_log_file>", args[0]);
@@ -15,7 +17,6 @@ fn main() -> Result<()> {
 
     let mut runner = Runner::builder()
         .with_log_file(log_file)
-        .with_threads(4)
         .with_stdout_writer(stdout_writer)
         .build()?;
 

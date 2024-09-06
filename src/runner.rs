@@ -1,16 +1,13 @@
 use crate::log_processor::LogProcessor;
 use eyre::Result;
-use rayon::{prelude::*, ThreadPoolBuilder};
 use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
     path::Path,
-    sync::Arc,
 };
 
 pub struct Runner<W: Write> {
     log_file: String,
-    num_threads: usize,
     stdout_writer: W,
 }
 
@@ -20,19 +17,14 @@ impl<W: Write> Runner<W> {
     }
 
     pub fn run(&mut self) -> Result<()> {
-        ThreadPoolBuilder::new()
-            .num_threads(self.num_threads)
-            .build_global()?;
-
         let path = Path::new(&self.log_file);
         let file = File::open(path)?;
         let reader = BufReader::new(file);
 
-        let processor = Arc::new(LogProcessor::new()?);
+        let mut processor = LogProcessor::new()?;
 
-        reader.lines().par_bridge().for_each(|line| {
+        reader.lines().for_each(|line| {
             if let Ok(line) = line {
-                let processor = Arc::clone(&processor);
                 processor.process_line(&line).unwrap_or_else(|err| {
                     eprintln!("Error processing line: {}", err);
                 });
@@ -40,12 +32,10 @@ impl<W: Write> Runner<W> {
         });
 
         // Capture the last pipeline if it was still in progress
-        {
-            let mut pipelines = processor.pipelines.lock().unwrap();
-            let mut current_pipeline = processor.current_pipeline.lock().unwrap();
-            if let Some(pipeline) = current_pipeline.take() {
-                pipelines.push(pipeline);
-            }
+        let pipelines = &mut processor.pipelines;
+        let current_pipeline = &processor.current_pipeline;
+        if let Some(pipeline) = current_pipeline {
+            pipelines.push(pipeline.clone());
         }
 
         processor.print_summary(&mut self.stdout_writer);
@@ -56,7 +46,6 @@ impl<W: Write> Runner<W> {
 
 pub struct RunnerBuilder<W: Write> {
     log_file: Option<String>,
-    num_threads: Option<usize>,
     stdout_writer: Option<W>,
 }
 
@@ -64,7 +53,6 @@ impl<W: Write> Default for RunnerBuilder<W> {
     fn default() -> Self {
         RunnerBuilder {
             log_file: None,
-            num_threads: None,
             stdout_writer: None,
         }
     }
@@ -73,11 +61,6 @@ impl<W: Write> Default for RunnerBuilder<W> {
 impl<W: Write> RunnerBuilder<W> {
     pub fn with_log_file(mut self, log_file: &str) -> Self {
         self.log_file = Some(log_file.to_string());
-        self
-    }
-
-    pub fn with_threads(mut self, num_threads: usize) -> Self {
-        self.num_threads = Some(num_threads);
         self
     }
 
@@ -91,7 +74,6 @@ impl<W: Write> RunnerBuilder<W> {
             log_file: self
                 .log_file
                 .ok_or_else(|| eyre::eyre!("log_file is required"))?,
-            num_threads: self.num_threads.unwrap_or(4),
             stdout_writer: self
                 .stdout_writer
                 .ok_or_else(|| eyre::eyre!("stdout_writer is required"))?,
@@ -108,18 +90,15 @@ mod tests {
     #[test]
     fn test_runner_builder() {
         let log_file = NamedTempFile::new().unwrap();
-        let num_threads = 8;
         let stdout_writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
 
         let runner = Runner::builder()
             .with_log_file(log_file.path().to_str().unwrap())
-            .with_threads(num_threads)
             .with_stdout_writer(stdout_writer)
             .build()
             .unwrap();
 
         assert_eq!(runner.log_file, log_file.path().to_str().unwrap());
-        assert_eq!(runner.num_threads, num_threads);
     }
 
     #[test]
@@ -131,7 +110,6 @@ mod tests {
 
         let mut runner = Runner::builder()
             .with_log_file(log_file.path().to_str().unwrap())
-            .with_threads(4)
             .with_stdout_writer(stdout_writer)
             .build()
             .unwrap();
@@ -150,10 +128,7 @@ mod tests {
     fn test_runner_builder_missing_log_file() {
         let stdout_writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
 
-        let result = Runner::builder()
-            .with_threads(4)
-            .with_stdout_writer(stdout_writer)
-            .build();
+        let result = Runner::builder().with_stdout_writer(stdout_writer).build();
 
         assert!(result.is_err());
     }
@@ -164,7 +139,6 @@ mod tests {
 
         let result: Result<Runner<Cursor<Vec<u8>>>> = Runner::builder()
             .with_log_file(log_file.path().to_str().unwrap())
-            .with_threads(4)
             .build();
 
         assert!(result.is_err());
