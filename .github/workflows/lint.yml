@@ -1,6 +1,6 @@
-# Runs unit tests.
+# Runs linters.
 
-name: unit
+name: lint
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  lint:
     name: test
     runs-on: ubuntu-latest
     env:
@@ -23,7 +23,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - uses: taiki-e/install-action@nextest
-      - name: Run tests
+      - name: Run clippy
         run: |
-          cargo nextest run --locked
+          cargo clippy --workspace --lib --examples --tests --all-features
